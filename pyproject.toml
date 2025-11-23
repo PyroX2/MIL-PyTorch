@@ -1,12 +1,14 @@
 [project]
-name = "mil"
+name = "diabetic-retinopathy"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ipykernel>=7.1.0",
-    "matplotlib>=3.10.7",
+    "numpy>=2.3.5",
+    "scikit-learn>=1.7.2",
+    "torch>=2.9.1",
     "torchmil>=1.0.0",
     "torchvision>=0.24.1",
 ]
