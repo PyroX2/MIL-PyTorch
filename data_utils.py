@@ -1,6 +1,7 @@
 import torch
 
 
+# Given a batch of bags with varying number of instances, collate them into a single tensor with padding. Returns features, labels, masks, and bags length.
 def collate_fn(batch):
     # Aquires important dimensions
     batch_size = len(batch)
@@ -27,4 +28,4 @@ def collate_fn(batch):
         masks[i*max_bag_length:(i*max_bag_length+n_instances)] = 1
         labels[i] = y
 
-    return features, labels, masks
+    return features, labels, masks, max_bag_length

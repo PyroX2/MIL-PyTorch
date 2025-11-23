@@ -19,8 +19,8 @@ class AttentionMILModel(torch.nn.Module):
 
         self.classifier = torch.nn.Linear(emb_dim, 1)
 
-    def forward(self, X, mask, batch_size, return_att=False):
-        bag_size = int(X.shape[0] / batch_size)
+    def forward(self, X, mask, bag_size, return_att=False):
+        batch_size = int(X.shape[0] / bag_size)
 
         # Process only instances that are not masked (i.e., valid instances, not padding)
         X = self.resnet(X[mask != 0])  # (batch_size * bag_size, emb_dim)
