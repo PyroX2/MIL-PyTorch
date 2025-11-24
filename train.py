@@ -10,6 +10,7 @@ from metrics import MetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed
 from data_utils import create_dataloader
+from model_utils import build_model
 import wandb
 from tqdm import tqdm
 
@@ -175,7 +176,7 @@ def main():
     n_classes = len(train_dataset.img_folder_dataset.classes)
 
     # Initialize model, loss function, and optimizer
-    model = AttentionMILModel(output_dim=n_classes, att_dim=args.attention_dim).to(device)
+    model = build_model(output_dim=n_classes, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
