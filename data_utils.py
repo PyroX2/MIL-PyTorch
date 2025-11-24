@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler, Subset
 import torch.distributed as dist
+from typing import List
 
 
 # Given a batch of bags with varying number of instances, collate them into a single tensor with padding. Returns features, labels, masks, and bags length.
@@ -62,7 +63,8 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
             return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False)
     else:
         if rank == 0:
-            all_idx = torch.arange(len(dataset)).numpy()
+            all_idx = balance_indices(targets, sample_type="oversample")
+            all_idx = torch.tensor(all_idx, dtype=torch.int64)
         else:
             all_idx = None
         
@@ -72,7 +74,8 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
 
         # Broadcast all indices to all ranks
         dist.broadcast_object_list(obj_list, src=0)
-        all_idx = obj_list[0]
+        if isinstance(obj_list[0], torch.Tensor):
+            all_idx = obj_list[0].tolist()
         
         subset = Subset(dataset, all_idx)
 
@@ -81,3 +84,42 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
         dataloader = DataLoader(subset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=sampler)
 
         return dataloader
+
+def balance_indices(targets: torch.Tensor, sample_type="oversample") -> List:
+    """
+    Given a tensor of targets, return balanced indices for sampling.
+    """
+    assert sample_type in ["oversample", "undersample", None], "sample_type must be either 'oversample', 'undersample' or None"
+
+    counts = torch.unique(targets, return_counts=True) # Count occurrences of each class
+
+    if sample_type == "oversample":
+        # Calculate weights for each class
+        weights = 1.0 / counts[1].float()
+        samples_weights = weights[targets]
+
+        # Create sampler
+        weighted_sampler = WeightedRandomSampler(weights=samples_weights, num_samples=len(samples_weights), replacement=True)
+
+        return list(weighted_sampler)
+    elif sample_type == "undersample":
+        # Get the minimum count among all classes
+        min_count = torch.min(counts[1]).item()
+
+        balanced_indices = []
+
+        for class_idx in counts[0]:
+            # Get all indices for the current class
+            class_indices = torch.where(targets == class_idx)[0]
+
+            # Randomly select min_count indices from the current class
+            selected_indices = class_indices[torch.randperm(len(class_indices))[:min_count]]
+
+            # Add selected indices to the balanced list
+            balanced_indices.extend(selected_indices.tolist())
+
+        balanced_indices = balanced_indices[torch.randperm(len(balanced_indices))]
+
+        return balanced_indices
+    else:
+        return torch.arange(len(targets)).tolist()
