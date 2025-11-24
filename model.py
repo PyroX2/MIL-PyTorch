@@ -4,7 +4,7 @@ from torchvision.models import resnet18, ResNet18_Weights
 
 
 class AttentionMILModel(torch.nn.Module):
-    def __init__(self, att_dim):
+    def __init__(self, output_dim, att_dim):
         super().__init__()
 
         # Feature extractor
@@ -17,7 +17,7 @@ class AttentionMILModel(torch.nn.Module):
         self.fc1 = torch.nn.Linear(emb_dim, att_dim)
         self.fc2 = torch.nn.Linear(att_dim, 1)
 
-        self.classifier = torch.nn.Linear(emb_dim, 1)
+        self.classifier = torch.nn.Linear(emb_dim, output_dim)
 
     def forward(self, X, mask, bag_size, return_att=False):
         batch_size = int(X.shape[0] / bag_size)

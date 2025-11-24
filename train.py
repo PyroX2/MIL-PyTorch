@@ -1,0 +1,177 @@
+import os
+import torch
+from torch.utils.data import DataLoader
+from torchvision.transforms import v2
+from image_patcher import ImagePatcher
+from dataset import MILDataset
+from data_utils import collate_fn
+from model import AttentionMILModel
+from metrics import MetricsCalculator
+from argparse import ArgumentParser
+import wandb
+from tqdm import tqdm
+
+
+def parse_args():
+    parser = ArgumentParser(description="Train Attention-based MIL Model")
+    parser.add_argument("--data-dir", type=str, required=True, help="Path to the dataset directory")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
+    parser.add_argument("--num-epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for optimizer")
+    parser.add_argument("--patch-size", type=int, default=224, help="Size of image patches")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use for training")
+    parser.add_argument("--overlap", type=float, default=0.5, help="Overlap size between patches")
+    parser.add_argument("--attention-dim", type=int, default=128, help="Dimension of attention layer")
+    parser.add_argument("--num-workers", type=int, default=4, help="Number of workers for data loading")
+    return parser.parse_args()
+
+args = parse_args()
+
+# Start a new wandb run to track this script.
+run = wandb.init(
+    # Set the wandb entity where your project will be logged (generally your team name).
+    entity="kubawilk63-politechnika-gda-ska",
+    # Set the wandb project where this run will be logged.
+    project="MIL-Breast-Cancer",
+    # Track hyperparameters and run metadata.
+    config={
+        "learning_rate": args.learning_rate,
+        "batch_size": args.batch_size,
+        "dataset": args.data_dir,
+        "epochs": args.num_epochs,
+        "patch_size": args.patch_size,
+        "overlap": args.overlap,
+        "attention_dim": args.attention_dim,
+        "device": args.device,
+    },
+)
+
+run.log_model(path="model.py", name="attention_mil_model")
+
+
+# Given a model and validation dataloader, evaluate the model performance on validation set
+def evaluate(model, val_dl, criterion, device):
+    metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.img_folder_dataset.classes))
+    
+    val_loss = 0.0 # Track validation loss
+    outputs_list = []
+    targets_list = []
+
+    model.eval()
+    with torch.no_grad():
+        for features, labels, masks, bags_length in tqdm(val_dl, desc="Validation"):
+            # Move data to device
+            features = features.to(device)
+            labels = labels.to(device)
+            masks = masks.to(device)
+
+            # Model forward pass
+            outputs = model(features, masks, bags_length)
+            loss = criterion(outputs.squeeze(), labels)
+
+            val_loss += loss.item()
+            outputs_list.extend(outputs.detach().cpu().tolist())
+            targets_list.extend(labels.detach().cpu().tolist())
+
+    avg_val_loss = val_loss / len(val_dl)
+    val_accuracy, val_f1_score, val_auprc, val_auroc = metrics_calculator.calculate(outputs_list, targets_list)
+    return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc
+
+
+# Train the model
+def train(model, train_dl, val_dl, criterion, optimizer, device, num_epochs):
+    # Initialize variables to track best model
+    best_val_loss = float('inf')
+    metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.img_folder_dataset.classes))
+    
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0 # Track training epoch loss
+        outputs_list = []
+        targets_list = []
+
+        model.train()
+        for features, labels, masks, bags_length in tqdm(train_dl, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
+            optimizer.zero_grad() # Zero the gradients
+
+            # Move data to device
+            features = features.to(device)
+            masks = masks.to(device)
+            labels = labels.to(device)
+
+            # Model and criterion forward pass
+            outputs = model(features, masks, bags_length)
+            loss = criterion(outputs.squeeze(), labels)
+
+            # Model optimization step
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            outputs_list.extend(outputs.detach().cpu().tolist())
+            targets_list.extend(labels.detach().cpu().tolist())
+
+        # Calculate train metrics
+        avg_train_loss = epoch_loss / len(train_dl)
+        train_accuracy, train_f1_score, train_auprc, train_auroc = metrics_calculator.calculate(outputs_list, targets_list)
+
+        # Calculate validation metrics
+        avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc = evaluate(model, val_dl, criterion, device)
+
+        # Print epoch summary
+        print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        # Logging to wandb
+        run.log({
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "train_accuracy": train_accuracy,
+            "train_f1_score": train_f1_score,
+            "train_auprc": train_auprc,
+            "train_auroc": train_auroc,
+            "val_loss": avg_val_loss,
+            "val_accuracy": val_accuracy,
+            "val_f1_score": val_f1_score,
+            "val_auprc": val_auprc,
+            "val_auroc": val_auroc,
+        })
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), "best_attention_mil_model.pth")
+
+    torch.save(model.state_dict(), "attention_mil_model.pth")
+    run.log_model(path="attention_mil_model.pth", name="final_attention_mil_model")
+    print("Model training complete and saved.")
+
+
+def main():
+    device = args.device
+
+    # Define image transformations
+    transform = v2.Compose([
+        v2.ToTensor()
+    ])
+
+    # Create patcher used for splitting images into patches
+    patcher = ImagePatcher(patch_size=args.patch_size, overlap=args.overlap)
+
+    # Create dataset and dataloader
+    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train/multiclass"), image_patcher=patcher, transform=transform)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=args.num_workers)
+
+    val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val/multiclass"), image_patcher=patcher, transform=transform)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
+
+    n_classes = len(train_dataset.img_folder_dataset.classes)
+
+    # Initialize model, loss function, and optimizer
+    model = AttentionMILModel(output_dim=n_classes, att_dim=args.attention_dim).to(device)
+
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    train(model, train_dataloader, val_dataloader, criterion, optimizer, device, args.num_epochs)
+
+
+if __name__ == "__main__":
+    main()
