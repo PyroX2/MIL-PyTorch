@@ -9,6 +9,7 @@ from model import AttentionMILModel
 from metrics import MetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed
+from data_utils import create_dataloader
 import wandb
 from tqdm import tqdm
 
@@ -166,10 +167,10 @@ def main():
 
     # Create dataset and dataloader
     train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train/multiclass"), image_patcher=patcher, transform=transform)
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=args.num_workers)
+    train_dataloader = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val/multiclass"), image_patcher=patcher, transform=transform)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
+    val_dataloader = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp)
 
     n_classes = len(train_dataset.img_folder_dataset.classes)
 

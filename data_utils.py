@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler
 
 
 # Given a batch of bags with varying number of instances, collate them into a single tensor with padding. Returns features, labels, masks, and bags length.
@@ -29,3 +30,25 @@ def collate_fn(batch):
         labels[i] = y
 
     return features, labels, masks, max_bag_length
+
+
+def create_dataloader(dataset, batch_size, num_workers, is_ddp, shuffle=True):
+    if not is_ddp:
+        if shuffle:
+            # Use weighted random sampler to handle class imbalance
+            targets = torch.tensor(dataset.img_folder_dataset.targets, dtype=torch.long) # Get all targets from the dataset
+            counts = torch.unique(targets, return_counts=True) # Count occurrences of each class
+            
+            # Calculate weights for each class
+            weights = 1.0 / counts[1].float()
+            samples_weights = weights[targets]
+
+            # Create sampler
+            weighted_sampler = WeightedRandomSampler(weights=samples_weights, num_samples=len(samples_weights), replacement=True)
+            
+            # Create dataloader
+            dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=weighted_sampler)
+
+            return dataloader
+        else:
+            return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False)
