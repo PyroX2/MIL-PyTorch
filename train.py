@@ -149,8 +149,9 @@ def main():
 
     # Define image transformations
     transform = v2.Compose([
-        v2.ToTensor()
-    ])
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True)
+        ])
 
     # Create patcher used for splitting images into patches
     patcher = ImagePatcher(patch_size=args.patch_size, overlap=args.overlap)

@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import Dataset
 from torchvision.datasets import ImageFolder
 import torchvision.transforms.v2 as v2
@@ -10,8 +11,9 @@ class MILDataset(Dataset):
         super().__init__()
         if transform is None:
             transform = v2.Compose([
-                v2.ToTensor()
-            ])
+                v2.ToImage(), 
+                v2.ToDtype(torch.float32, scale=True)
+                ])
 
         self.image_patcher = image_patcher
         self.img_folder_dataset = ImageFolder(dataset_path, transform=transform)
