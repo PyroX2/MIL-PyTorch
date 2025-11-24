@@ -8,6 +8,7 @@ from data_utils import collate_fn
 from model import AttentionMILModel
 from metrics import MetricsCalculator
 from argparse import ArgumentParser
+from ddp_utils import init_distributed, cleanup_distributed
 import wandb
 from tqdm import tqdm
 
@@ -145,6 +146,13 @@ def train(model, train_dl, val_dl, criterion, optimizer, device, num_epochs):
 
 
 def main():
+    # Setup distributed data processing
+    is_ddp, local_rank, rank, world_size = init_distributed()
+
+    if rank == 0:
+        print(f"DDP initialized: is_ddp={is_ddp}, world_size={world_size}")
+        print(f"Available GPUs: {torch.cuda.device_count()}")
+
     device = args.device
 
     # Define image transformations
@@ -171,7 +179,9 @@ def main():
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    train(model, train_dataloader, val_dataloader, criterion, optimizer, device, args.num_epochs)
+    # Distributed data processing cleanup
+    if is_ddp:
+        cleanup_distributed()
 
 
 if __name__ == "__main__":
