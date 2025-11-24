@@ -167,10 +167,10 @@ def main():
 
     # Create dataset and dataloader
     train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train/multiclass"), image_patcher=patcher, transform=transform)
-    train_dataloader = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp)
+    train_dataloader = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val/multiclass"), image_patcher=patcher, transform=transform)
-    val_dataloader = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp)
+    val_dataloader = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     n_classes = len(train_dataset.img_folder_dataset.classes)
 

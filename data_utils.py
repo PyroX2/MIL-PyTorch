@@ -1,5 +1,6 @@
 import torch
-from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler, Subset
+import torch.distributed as dist
 
 
 # Given a batch of bags with varying number of instances, collate them into a single tensor with padding. Returns features, labels, masks, and bags length.
@@ -32,11 +33,18 @@ def collate_fn(batch):
     return features, labels, masks, max_bag_length
 
 
-def create_dataloader(dataset, batch_size, num_workers, is_ddp, shuffle=True):
+def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_size=1, shuffle=True):
+    """
+    Create a DataLoader for the given dataset, handling both distributed and non-distributed settings.
+
+    Batch size is the batch size used per rank in distributed mode.
+    """
+
+    targets = torch.tensor(dataset.img_folder_dataset.targets, dtype=torch.long) # Get all targets from the dataset
+
     if not is_ddp:
         if shuffle:
             # Use weighted random sampler to handle class imbalance
-            targets = torch.tensor(dataset.img_folder_dataset.targets, dtype=torch.long) # Get all targets from the dataset
             counts = torch.unique(targets, return_counts=True) # Count occurrences of each class
             
             # Calculate weights for each class
@@ -52,3 +60,24 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, shuffle=True):
             return dataloader
         else:
             return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False)
+    else:
+        if rank == 0:
+            all_idx = torch.arange(len(dataset)).numpy()
+        else:
+            all_idx = None
+        
+        # Create object list to hold all indices and broadcast to all ranks
+        # broadcast_object_list is used for Python objects (lists, numpy arrays, etc.)
+        obj_list = [all_idx]
+
+        # Broadcast all indices to all ranks
+        dist.broadcast_object_list(obj_list, src=0)
+        all_idx = obj_list[0]
+        
+        subset = Subset(dataset, all_idx)
+
+        sampler = DistributedSampler(subset, num_replicas=world_size, rank=rank, shuffle=shuffle)
+
+        dataloader = DataLoader(subset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=sampler)
+
+        return dataloader
