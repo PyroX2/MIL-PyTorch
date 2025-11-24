@@ -8,7 +8,7 @@ class AttentionMILModel(torch.nn.Module):
         super().__init__()
 
         # Feature extractor
-        self.resnet = resnet18(ResNet18_Weights)
+        self.resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
         emb_dim = self.resnet.fc.in_features
 
         self.resnet.fc = torch.nn.Identity()
