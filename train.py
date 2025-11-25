@@ -1,6 +1,6 @@
 import os
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import Subset
 from torchvision.transforms import v2
 from image_patcher import ImagePatcher
 from dataset import MILDataset
@@ -8,7 +8,7 @@ from data_utils import collate_fn
 from model import AttentionMILModel
 from metrics import MetricsCalculator
 from argparse import ArgumentParser
-from ddp_utils import init_distributed, cleanup_distributed
+from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
 from model_utils import build_model
 import wandb
@@ -26,39 +26,45 @@ def parse_args():
     parser.add_argument("--overlap", type=float, default=0.5, help="Overlap size between patches")
     parser.add_argument("--attention-dim", type=int, default=128, help="Dimension of attention layer")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of workers for data loading")
+    parser.add_argument("--log-wandb", action="store_true", help="Whether to log training to Weights & Biases")
     return parser.parse_args()
 
 args = parse_args()
 
-# Start a new wandb run to track this script.
-run = wandb.init(
-    # Set the wandb entity where your project will be logged (generally your team name).
-    entity="kubawilk63-politechnika-gda-ska",
-    # Set the wandb project where this run will be logged.
-    project="MIL-Breast-Cancer",
-    # Track hyperparameters and run metadata.
-    config={
-        "learning_rate": args.learning_rate,
-        "batch_size": args.batch_size,
-        "dataset": args.data_dir,
-        "epochs": args.num_epochs,
-        "patch_size": args.patch_size,
-        "overlap": args.overlap,
-        "attention_dim": args.attention_dim,
-        "device": args.device,
-    },
-)
-
-run.log_model(path="model.py", name="attention_mil_model")
+def get_logger(args):
+    # Start a new wandb run to track this script.
+    wandb_logger = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="kubawilk63-politechnika-gda-ska",
+        # Set the wandb project where this run will be logged.
+        project="MIL-Breast-Cancer",
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": args.learning_rate,
+            "batch_size": args.batch_size,
+            "dataset": args.data_dir,
+            "epochs": args.num_epochs,
+            "patch_size": args.patch_size,
+            "overlap": args.overlap,
+            "attention_dim": args.attention_dim,
+            "device": args.device,
+        },
+    )
+    return wandb_logger
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def evaluate(model, val_dl, criterion, device):
-    metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.img_folder_dataset.classes))
-    
+def validate(model, val_dl, criterion, is_ddp, rank, world_size, device):
+    # Initialize validation dataloader with correct number of classes
+    if isinstance(val_dl.dataset, Subset):
+        metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.dataset.img_folder_dataset.classes))
+    else:
+        metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.img_folder_dataset.classes))    
+
     val_loss = 0.0 # Track validation loss
     outputs_list = []
     targets_list = []
+    losses_list = []
 
     model.eval()
     with torch.no_grad():
@@ -72,22 +78,44 @@ def evaluate(model, val_dl, criterion, device):
             outputs = model(features, masks, bags_length)
             loss = criterion(outputs.squeeze(), labels)
 
+            losses_list.append(loss.item())
             val_loss += loss.item()
             outputs_list.extend(outputs.detach().cpu().tolist())
             targets_list.extend(labels.detach().cpu().tolist())
 
-    avg_val_loss = val_loss / len(val_dl)
-    val_accuracy, val_f1_score, val_auprc, val_auroc = metrics_calculator.calculate(outputs_list, targets_list)
+    gathered_outputs = gather_from_ranks(outputs_list, is_ddp, world_size)
+    gathered_targets = gather_from_ranks(targets_list, is_ddp, world_size)
+    # gathered_losses = gather_from_ranks(losses_list, is_ddp, world_size)
+    gathered_losses = gather_from_ranks(val_loss, is_ddp, world_size)
+
+    if rank != 0:
+        return None
+    
+    gathered_losses = torch.tensor(gathered_losses).flatten()
+    gathered_outputs = torch.tensor(gathered_outputs).flatten(0, 1)
+    gathered_targets = torch.tensor(gathered_targets).flatten(0, 1)
+
+    avg_val_loss = gathered_losses.mean() / len(val_dl)
+
+    val_accuracy, val_f1_score, val_auprc, val_auroc = metrics_calculator.calculate(gathered_outputs, gathered_targets)
     return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc
 
 
 # Train the model
-def train(model, train_dl, val_dl, criterion, optimizer, device, num_epochs):
+def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, is_ddp, rank, world_size, logger=None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
-    metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.img_folder_dataset.classes))
+    if isinstance(train_dl.dataset, Subset):
+        metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.dataset.img_folder_dataset.classes))
+    else:
+        metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.img_folder_dataset.classes))
     
     for epoch in range(num_epochs):
+        if rank == 0:
+            print(f"Epoch {epoch+1}/{num_epochs} started")
+        if is_ddp and train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+
         epoch_loss = 0.0 # Track training epoch loss
         outputs_list = []
         targets_list = []
@@ -103,7 +131,7 @@ def train(model, train_dl, val_dl, criterion, optimizer, device, num_epochs):
 
             # Model and criterion forward pass
             outputs = model(features, masks, bags_length)
-            loss = criterion(outputs.squeeze(), labels)
+            loss = criterion(outputs, labels)
 
             # Model optimization step
             loss.backward()
@@ -118,42 +146,63 @@ def train(model, train_dl, val_dl, criterion, optimizer, device, num_epochs):
         train_accuracy, train_f1_score, train_auprc, train_auroc = metrics_calculator.calculate(outputs_list, targets_list)
 
         # Calculate validation metrics
-        avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc = evaluate(model, val_dl, criterion, device)
-
-        # Print epoch summary
-        print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        res = validate(
+            model, 
+            val_dl, 
+            criterion,
+            is_ddp=is_ddp,
+            rank=rank,
+            world_size=world_size,
+            device=device)
         
-        # Logging to wandb
-        run.log({
-            "epoch": epoch + 1,
-            "train_loss": avg_train_loss,
-            "train_accuracy": train_accuracy,
-            "train_f1_score": train_f1_score,
-            "train_auprc": train_auprc,
-            "train_auroc": train_auroc,
-            "val_loss": avg_val_loss,
-            "val_accuracy": val_accuracy,
-            "val_f1_score": val_f1_score,
-            "val_auprc": val_auprc,
-            "val_auroc": val_auroc,
-        })
+        if res is not None:
+            avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc = res
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), "best_attention_mil_model.pth")
+            # Print epoch summary
+            print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+            # Logging to wandb
+            if logger is not None:
+                logger.log({
+                    "epoch": epoch + 1,
+                    "train_loss": avg_train_loss,
+                    "train_accuracy": train_accuracy,
+                    "train_f1_score": train_f1_score,
+                    "train_auprc": train_auprc,
+                    "train_auroc": train_auroc,
+                    "val_loss": avg_val_loss,
+                    "val_accuracy": val_accuracy,
+                    "val_f1_score": val_f1_score,
+                    "val_auprc": val_auprc,
+                    "val_auroc": val_auroc,
+                })
 
-    torch.save(model.state_dict(), "attention_mil_model.pth")
-    run.log_model(path="attention_mil_model.pth", name="final_attention_mil_model")
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                torch.save(model.state_dict(), "best_attention_mil_model.pth")
+
     print("Model training complete and saved.")
+    torch.save(model.state_dict(), "attention_mil_model.pth")
+    
+    if logger is not None:
+        logger.log_model(path="attention_mil_model.pth", name="final_attention_mil_model")
 
 
 def main():
+
     # Setup distributed data processing
     is_ddp, local_rank, rank, world_size = init_distributed()
 
     if rank == 0:
         print(f"DDP initialized: is_ddp={is_ddp}, world_size={world_size}")
         print(f"Available GPUs: {torch.cuda.device_count()}")
+
+    if args.log_wandb and rank == 0 and is_ddp:     # If distributed, only log from rank 0
+        wandb_logger = get_logger(args)
+        wandb_logger.log_model(path="model.py", name="attention_mil_model")
+    elif args.log_wandb:    # Non-distributed logging
+        wandb_logger = get_logger(args)
+        wandb_logger.log_model(path="model.py", name="attention_mil_model")
 
     device = args.device
 
@@ -168,10 +217,10 @@ def main():
 
     # Create dataset and dataloader
     train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train/multiclass"), image_patcher=patcher, transform=transform)
-    train_dataloader = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val/multiclass"), image_patcher=patcher, transform=transform)
-    val_dataloader = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     n_classes = len(train_dataset.img_folder_dataset.classes)
 
@@ -180,6 +229,21 @@ def main():
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    # Train the model
+    train(
+        model, 
+        train_dataloader, 
+        val_dataloader, 
+        train_sampler, 
+        criterion, 
+        optimizer, 
+        device, 
+        num_epochs=args.num_epochs,
+        is_ddp=is_ddp,
+        rank=rank,
+        world_size=world_size, 
+        logger=wandb_logger if args.log_wandb else None)
 
     # Distributed data processing cleanup
     if is_ddp:
