@@ -58,9 +58,9 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
             # Create dataloader
             dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=weighted_sampler)
 
-            return dataloader
+            return dataloader, weighted_sampler
         else:
-            return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False)
+            return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False), None
     else:
         if rank == 0:
             all_idx = balance_indices(targets, sample_type="oversample")
@@ -83,7 +83,7 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
 
         dataloader = DataLoader(subset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=sampler)
 
-        return dataloader
+        return dataloader, sampler
 
 def balance_indices(targets: torch.Tensor, sample_type="oversample") -> List:
     """
@@ -118,8 +118,9 @@ def balance_indices(targets: torch.Tensor, sample_type="oversample") -> List:
             # Add selected indices to the balanced list
             balanced_indices.extend(selected_indices.tolist())
 
-        balanced_indices = balanced_indices[torch.randperm(len(balanced_indices))]
+        balanced_indices = torch.tensor(balanced_indices)
+        balanced_indices = balanced_indices[torch.randperm(len(balanced_indices))]  # Shuffle
 
-        return balanced_indices
+        return balanced_indices.tolist()
     else:
         return torch.arange(len(targets)).tolist()
