@@ -164,7 +164,6 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             # Logging to wandb
             if logger is not None:
                 logger.log({
-                    "epoch": epoch + 1,
                     "train_loss": avg_train_loss,
                     "train_accuracy": train_accuracy,
                     "train_f1_score": train_f1_score,
@@ -200,9 +199,11 @@ def main():
     if args.log_wandb and rank == 0 and is_ddp:     # If distributed, only log from rank 0
         wandb_logger = get_logger(args)
         wandb_logger.log_model(path="model.py", name="attention_mil_model")
-    elif args.log_wandb:    # Non-distributed logging
+    elif args.log_wandb and not is_ddp:    # Non-distributed logging
         wandb_logger = get_logger(args)
         wandb_logger.log_model(path="model.py", name="attention_mil_model")
+    else:
+        wandb_logger = None
 
     device = args.device
 
@@ -243,7 +244,7 @@ def main():
         is_ddp=is_ddp,
         rank=rank,
         world_size=world_size, 
-        logger=wandb_logger if args.log_wandb else None)
+        logger=wandb_logger)
 
     # Distributed data processing cleanup
     if is_ddp:
