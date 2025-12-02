@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=4, help="Number of workers for data loading")
     parser.add_argument("--log-wandb", action="store_true", help="Whether to log training to Weights & Biases")
     parser.add_argument("--class-selection", action="store_true", help="If used classes are defined based on classes.json config file")
+    parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
     return parser.parse_args()
 
 args = parse_args()
@@ -223,7 +224,10 @@ def main():
 
     # Create dataset and dataloader
     train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
+    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     if wandb_logger is not None:
         wandb_logger.config["classes"] = train_dataset.dirs_with_classes

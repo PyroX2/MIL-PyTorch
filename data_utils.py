@@ -34,7 +34,7 @@ def collate_fn(batch):
     return features, labels, masks, max_bag_length
 
 
-def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_size=1, shuffle=True):
+def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_size=1, sample_type=None, shuffle=True):
     """
     Create a DataLoader for the given dataset, handling both distributed and non-distributed settings.
 
@@ -63,7 +63,7 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
             return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False), None
     else:
         if rank == 0:
-            all_idx = balance_indices(targets, sample_type="oversample")
+            all_idx = balance_indices(targets, sample_type=sample_type)
             all_idx = torch.tensor(all_idx, dtype=torch.int64)
         else:
             all_idx = None
