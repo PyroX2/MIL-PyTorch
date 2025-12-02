@@ -5,7 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ImagePatcher:
-    def __init__(self, patch_size=224, overlap=0.5, bag_size=-1, empty_thresh=0.8, shuffle=True):
+    def __init__(self, patch_size=224, overlap=0.5, bag_size=-1, empty_thresh=0.1, shuffle=True):
         self.patch_size = patch_size
         self.overlap = overlap
         self.bag_size = bag_size
