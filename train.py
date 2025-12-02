@@ -66,9 +66,14 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
     targets_list = []
     losses_list = []
 
+    if rank == 0:
+        iterator = tqdm(val_dl, desc="Validation")
+    else:
+        iterator = val_dl
+
     model.eval()
     with torch.no_grad():
-        for features, labels, masks, bags_length in tqdm(val_dl, desc="Validation"):
+        for features, labels, masks, bags_length in iterator:
             # Move data to device
             features = features.to(device)
             labels = labels.to(device)
@@ -118,8 +123,13 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
         outputs_list = []
         targets_list = []
 
+        if rank == 0:
+            iterator = tqdm(train_dl, desc=f"Epoch {epoch+1}/{num_epochs} - Training")
+        else:
+            iterator = train_dl
+
         model.train()
-        for features, labels, masks, bags_length in tqdm(train_dl, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
+        for features, labels, masks, bags_length in iterator:
             optimizer.zero_grad() # Zero the gradients
 
             # Move data to device
