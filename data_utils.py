@@ -41,7 +41,7 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
     Batch size is the batch size used per rank in distributed mode.
     """
 
-    targets = torch.tensor(dataset.img_folder_dataset.targets, dtype=torch.long) # Get all targets from the dataset
+    targets = dataset.labels # Get all targets from the dataset
 
     if not is_ddp:
         if shuffle:

@@ -27,6 +27,7 @@ def parse_args():
     parser.add_argument("--attention-dim", type=int, default=128, help="Dimension of attention layer")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of workers for data loading")
     parser.add_argument("--log-wandb", action="store_true", help="Whether to log training to Weights & Biases")
+    parser.add_argument("--class-selection", action="store_true", help="If used classes are defined based on classes.json config file")
     return parser.parse_args()
 
 args = parse_args()
@@ -54,12 +55,9 @@ def get_logger(args):
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, is_ddp, rank, world_size, device):
+def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
-    if isinstance(val_dl.dataset, Subset):
-        metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.dataset.img_folder_dataset.classes))
-    else:
-        metrics_calculator = MetricsCalculator(num_classes=len(val_dl.dataset.img_folder_dataset.classes))    
+    metrics_calculator = MetricsCalculator(num_classes=n_classes)
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -102,13 +100,11 @@ def validate(model, val_dl, criterion, is_ddp, rank, world_size, device):
 
 
 # Train the model
-def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, is_ddp, rank, world_size, logger=None):
+def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, n_classes, is_ddp, rank, world_size, logger=None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
-    if isinstance(train_dl.dataset, Subset):
-        metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.dataset.img_folder_dataset.classes))
-    else:
-        metrics_calculator = MetricsCalculator(num_classes=len(train_dl.dataset.img_folder_dataset.classes))
+    
+    metrics_calculator = MetricsCalculator(num_classes=n_classes)
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -150,6 +146,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             model, 
             val_dl, 
             criterion,
+            n_classes=n_classes,
             is_ddp=is_ddp,
             rank=rank,
             world_size=world_size,
@@ -216,14 +213,21 @@ def main():
     # Create patcher used for splitting images into patches
     patcher = ImagePatcher(patch_size=args.patch_size, overlap=args.overlap)
 
+    # Select subset of classes
+    if args.class_selection:
+        with open("config/classes.json", "r") as f:
+            selected_classes = json.load(f)
+    else:
+        selected_classes = None
+
     # Create dataset and dataloader
-    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train/multiclass"), image_patcher=patcher, transform=transform)
-    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
+    val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
 
-    val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val/multiclass"), image_patcher=patcher, transform=transform)
-    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    if wandb_logger is not None:
+        wandb_logger.config["classes"] = train_dataset.dirs_with_classes
 
-    n_classes = len(train_dataset.img_folder_dataset.classes)
+    n_classes = len(train_dataset.classes)
 
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=n_classes, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
@@ -241,6 +245,7 @@ def main():
         optimizer, 
         device, 
         num_epochs=args.num_epochs,
+        n_classes=n_classes,
         is_ddp=is_ddp,
         rank=rank,
         world_size=world_size, 
