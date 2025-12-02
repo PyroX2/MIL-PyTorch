@@ -60,7 +60,13 @@ class MILDataset(Dataset):
     def __getitem__(self, index) -> Tuple:
         image_path, label = self.image_paths[index], self.labels[index]
 
-        image = Image.open(image_path).convert('RGB')
+        image = Image.open(image_path)
+
+        # Normalization
+        image = np.array(image)
+        image = np.expand_dims(image, axis=-1)      # Add channel dimension to grayscale image
+        image = image.repeat(repeats=3, axis=-1)    # Grayscale to RGB
+        image = (image - image.min()) / (image.max() - image.min())
 
         image = self.transform(image)
 
