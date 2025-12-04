@@ -15,6 +15,7 @@ import wandb
 from tqdm import tqdm
 import json
 import torch.nn.functional as F
+from time import gmtime, strftime
 
 
 def parse_args():
@@ -32,6 +33,7 @@ def parse_args():
     parser.add_argument("--class-selection", action="store_true", help="If used classes are defined based on classes.json config file")
     parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
     parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
+    parser.add_argument("--log-name", type=str, required=False, default=strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
     return parser.parse_args()
 
 args = parse_args()
@@ -117,7 +119,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
 
 
 # Train the model
-def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, output_dim, is_ddp, rank, world_size, logger=None):
+def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, output_dim, is_ddp, rank, world_size, log_name, logger=None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
     
@@ -210,13 +212,13 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                torch.save(model.state_dict(), "best_attention_mil_model.pth")
+                torch.save(model.state_dict(), f"{log_name}_best_attention_mil_model.pth")
 
     print("Model training complete and saved.")
-    torch.save(model.state_dict(), "attention_mil_model.pth")
+    torch.save(model.state_dict(), f"{log_name}_attention_mil_model.pth")
     
     if logger is not None:
-        logger.log_model(path="attention_mil_model.pth", name="final_attention_mil_model")
+        logger.log_model(path=f"{log_name}_attention_mil_model.pth", name="final_attention_mil_model")
 
 
 def main():
@@ -301,7 +303,8 @@ def main():
         is_ddp=is_ddp,
         rank=rank,
         world_size=world_size, 
-        logger=wandb_logger)
+        logger=wandb_logger,
+        log_name=args.log_name)
 
     # Distributed data processing cleanup
     if is_ddp:
