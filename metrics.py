@@ -17,8 +17,15 @@ class BinaryMetricsCalculator:
         self.recall = BinaryRecall()
     
     def calculate(self, outputs: List, targets: List) -> Tuple:
-        outputs = torch.tensor(outputs, dtype=torch.float32)
-        targets = torch.tensor(targets, dtype=torch.float32)
+        if not isinstance(outputs, torch.Tensor):
+            outputs = torch.tensor(outputs, dtype=torch.float32)
+        else:
+            outputs = outputs.to(torch.float32)
+            
+        if not isinstance(targets, torch.Tensor):
+            targets = torch.tensor(targets, dtype=torch.float32)
+        else:
+            targets = targets.to(torch.float32)
 
         self.accuracy.update(outputs, targets)
         accuracy = self.accuracy.compute()
@@ -63,8 +70,15 @@ class MulticlassMetricsCalculator:
         self.recall = MulticlassRecall(num_classes=num_classes)
     
     def calculate(self, outputs: List, targets: List) -> Tuple:
-        outputs = torch.tensor(outputs, dtype=torch.float32)
-        targets = torch.tensor(targets, dtype=torch.float32)
+        if not isinstance(outputs, torch.Tensor):
+            outputs = torch.tensor(outputs, dtype=torch.float32)
+        else:
+            outputs = outputs.to(torch.float32)
+            
+        if not isinstance(targets, torch.Tensor):
+            targets = torch.tensor(targets, dtype=torch.float32)
+        else:
+            targets = targets.to(torch.float32)
 
         self.accuracy.update(outputs, targets)
         accuracy = self.accuracy.compute()
