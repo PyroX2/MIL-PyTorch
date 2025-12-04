@@ -13,12 +13,15 @@ def deactivate_batchnorm(model):
         model.running_var = None
 
 
-def build_model(output_dim, att_dim, is_ddp, rank, local_rank, device="cuda" if torch.cuda.is_available() else "cpu"):
+def build_model(output_dim, att_dim, is_ddp, rank, local_rank, state_dict=None, device="cuda" if torch.cuda.is_available() else "cpu"):
     if is_ddp:
         if rank == 0:
             model = AttentionMILModel(output_dim=output_dim, att_dim=att_dim)
             model.apply(deactivate_batchnorm)
-            sd = model.state_dict()
+            if state_dict is None:
+                sd = model.state_dict()
+            else:
+                sd = state_dict
         else:
             model = AttentionMILModel(output_dim=output_dim, att_dim=att_dim)
             model.apply(deactivate_batchnorm)
