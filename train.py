@@ -6,7 +6,7 @@ from image_patcher import ImagePatcher
 from dataset import MILDataset
 from data_utils import collate_fn
 from model import AttentionMILModel
-from metrics import MetricsCalculator
+from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
@@ -59,7 +59,7 @@ def get_logger(args):
 # Given a model and validation dataloader, evaluate the model performance on validation set
 def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
-    metrics_calculator = MetricsCalculator(num_classes=n_classes)
+    metrics_calculator = BinaryMetricsCalculator()
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -76,11 +76,12 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
         for features, labels, masks, bags_length in iterator:
             # Move data to device
             features = features.to(device)
-            labels = labels.to(device)
+            labels = labels.to(device).to(torch.float32)
             masks = masks.to(device)
 
             # Model forward pass
             outputs = model(features, masks, bags_length)
+            outputs = F.sigmoid(outputs)
             loss = criterion(outputs.squeeze(), labels)
 
             losses_list.append(loss.item())
@@ -90,7 +91,6 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
 
     gathered_outputs = gather_from_ranks(outputs_list, is_ddp, world_size)
     gathered_targets = gather_from_ranks(targets_list, is_ddp, world_size)
-    # gathered_losses = gather_from_ranks(losses_list, is_ddp, world_size)
     gathered_losses = gather_from_ranks(val_loss, is_ddp, world_size)
 
     if rank != 0:
@@ -102,8 +102,8 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
 
     avg_val_loss = gathered_losses.mean() / len(val_dl)
 
-    val_accuracy, val_f1_score, val_auprc, val_auroc = metrics_calculator.calculate(gathered_outputs, gathered_targets)
-    return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc
+    val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, _ = metrics_calculator.calculate(gathered_outputs, gathered_targets)
+    return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall
 
 
 # Train the model
@@ -111,7 +111,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
     # Initialize variables to track best model
     best_val_loss = float('inf')
     
-    metrics_calculator = MetricsCalculator(num_classes=n_classes)
+    metrics_calculator = BinaryMetricsCalculator()
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -135,10 +135,11 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             # Move data to device
             features = features.to(device)
             masks = masks.to(device)
-            labels = labels.to(device)
+            labels = labels.to(device).to(torch.float32)
 
             # Model and criterion forward pass
             outputs = model(features, masks, bags_length)
+            outputs = F.sigmoid(outputs)
             loss = criterion(outputs, labels)
 
             # Model optimization step
@@ -151,7 +152,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
 
         # Calculate train metrics
         avg_train_loss = epoch_loss / len(train_dl)
-        train_accuracy, train_f1_score, train_auprc, train_auroc = metrics_calculator.calculate(outputs_list, targets_list)
+        train_accuracy, train_f1_score, train_auprc, train_auroc, train_precision, train_recall, _ = metrics_calculator.calculate(outputs_list, targets_list)
 
         # Calculate validation metrics
         res = validate(
@@ -165,7 +166,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             device=device)
         
         if res is not None:
-            avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc = res
+            avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall = res
 
             # Print epoch summary
             print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
@@ -178,11 +179,15 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
                     "train_f1_score": train_f1_score,
                     "train_auprc": train_auprc,
                     "train_auroc": train_auroc,
+                    "train_precision": train_precision,
+                    "train_recall": train_recall,
                     "val_loss": avg_val_loss,
                     "val_accuracy": val_accuracy,
                     "val_f1_score": val_f1_score,
                     "val_auprc": val_auprc,
                     "val_auroc": val_auroc,
+                    "val_precision": val_precision,
+                    "val_recall": val_recall,
                 })
 
             if avg_val_loss < best_val_loss:
@@ -245,9 +250,9 @@ def main():
     n_classes = len(train_dataset.classes)
 
     # Initialize model, loss function, and optimizer
-    model = build_model(output_dim=n_classes, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    model = build_model(output_dim=1, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     # Train the model
