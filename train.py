@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--log-wandb", action="store_true", help="Whether to log training to Weights & Biases")
     parser.add_argument("--class-selection", action="store_true", help="If used classes are defined based on classes.json config file")
     parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
+    parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
     return parser.parse_args()
 
 args = parse_args()
@@ -58,9 +59,12 @@ def get_logger(args):
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, device):
+def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
-    metrics_calculator = BinaryMetricsCalculator()
+    if output_dim == 1:
+        metrics_calculator = BinaryMetricsCalculator()
+    else:
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -77,12 +81,17 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
         for features, labels, masks, bags_length in iterator:
             # Move data to device
             features = features.to(device)
-            labels = labels.to(device).to(torch.float32)
+            labels = labels.to(device)
             masks = masks.to(device)
 
             # Model forward pass
             outputs = model(features, masks, bags_length)
-            outputs = F.sigmoid(outputs)
+
+            # If binary classification use sigmoid and transform labels to float
+            if output_dim == 1:
+                outputs = F.sigmoid(outputs)
+                labels = labels.to(torch.float32)
+    
             loss = criterion(outputs.squeeze(), labels)
 
             losses_list.append(loss.item())
@@ -108,11 +117,15 @@ def validate(model, val_dl, criterion, n_classes, is_ddp, rank, world_size, devi
 
 
 # Train the model
-def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, n_classes, is_ddp, rank, world_size, logger=None):
+def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, output_dim, is_ddp, rank, world_size, logger=None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
     
-    metrics_calculator = BinaryMetricsCalculator()
+    # Use correct metrics calculator for classification problem
+    if output_dim == 1:
+        metrics_calculator = BinaryMetricsCalculator()
+    else:
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -136,11 +149,15 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             # Move data to device
             features = features.to(device)
             masks = masks.to(device)
-            labels = labels.to(device).to(torch.float32)
+            labels = labels.to(device)
 
             # Model and criterion forward pass
             outputs = model(features, masks, bags_length)
-            outputs = F.sigmoid(outputs)
+
+            if output_dim == 1:
+                outputs = F.sigmoid(outputs)
+                labels = labels.to(torch.float32)
+
             loss = criterion(outputs, labels)
 
             # Model optimization step
@@ -160,7 +177,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             model, 
             val_dl, 
             criterion,
-            n_classes=n_classes,
+            output_dim=output_dim,
             is_ddp=is_ddp,
             rank=rank,
             world_size=world_size,
@@ -203,7 +220,6 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
 
 
 def main():
-
     # Setup distributed data processing
     is_ddp, local_rank, rank, world_size = init_distributed()
 
@@ -250,10 +266,25 @@ def main():
 
     n_classes = len(train_dataset.classes)
 
-    # Initialize model, loss function, and optimizer
-    model = build_model(output_dim=1, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    if args.output_dim == -1:
+        if n_classes == 2:
+            output_dim = 1
+        else:
+            output_dim = n_classes
+    else:
+        output_dim = args.output_dim
 
-    criterion = torch.nn.BCELoss()
+    print(f"{output_dim=}")
+
+    # Initialize model, loss function, and optimizer
+    model = build_model(output_dim=output_dim, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+
+    # Use correct criterion for binary/multiclass classification problem
+    if output_dim == 1:
+        criterion = torch.nn.BCELoss()
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     # Train the model
@@ -266,7 +297,7 @@ def main():
         optimizer, 
         device, 
         num_epochs=args.num_epochs,
-        n_classes=n_classes,
+        output_dim=output_dim,
         is_ddp=is_ddp,
         rank=rank,
         world_size=world_size, 
