@@ -64,8 +64,10 @@ class MILDataset(Dataset):
 
         # Normalization
         image = np.array(image)
-        image = np.expand_dims(image, axis=-1)      # Add channel dimension to grayscale image
-        image = image.repeat(repeats=3, axis=-1)    # Grayscale to RGB
+
+        if image.shape[-1] != 3:    # Check if image is RGB or GRAYSCALE
+            image = np.expand_dims(image, axis=-1)      # Add channel dimension to grayscale image
+            image = image.repeat(repeats=3, axis=-1)    # Grayscale to RGB
         image = (image - image.min()) / (image.max() - image.min())
 
         image = self.transform(image)
