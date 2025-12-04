@@ -1,5 +1,8 @@
 import torch
-from torcheval.metrics import BinaryAccuracy, BinaryF1Score, BinaryAUPRC, BinaryAUROC, BinaryConfusionMatrix, BinaryPrecision, BinaryRecall
+from torcheval.metrics import (
+    BinaryAccuracy, BinaryF1Score, BinaryAUPRC, BinaryAUROC, BinaryConfusionMatrix, BinaryPrecision, BinaryRecall,
+    MulticlassAccuracy, MulticlassF1Score, MulticlassAUPRC, MulticlassAUROC, MulticlassConfusionMatrix, MulticlassPrecision, MulticlassRecall
+)
 from typing import List, Tuple
 
 
@@ -51,13 +54,13 @@ class BinaryMetricsCalculator:
 
 class MulticlassMetricsCalculator:
     def __init__(self, num_classes):
-        self.accuracy = BinaryAccuracy()
-        self.f1_score = BinaryF1Score()
-        self.auprc = BinaryAUPRC()
-        self.auroc = BinaryAUROC()
-        self.confusion_matrix = BinaryConfusionMatrix()
-        self.precision = BinaryPrecision()
-        self.recall = BinaryRecall()
+        self.accuracy = MulticlassAccuracy(num_classes=num_classes)
+        self.f1_score = MulticlassF1Score(num_classes=num_classes)
+        self.auprc = MulticlassAUPRC(num_classes=num_classes)
+        self.auroc = MulticlassAUROC(num_classes=num_classes)
+        self.confusion_matrix = MulticlassConfusionMatrix(num_classes=num_classes)
+        self.precision = MulticlassPrecision(num_classes=num_classes)
+        self.recall = MulticlassRecall(num_classes=num_classes)
     
     def calculate(self, outputs: List, targets: List) -> Tuple:
         outputs = torch.tensor(outputs, dtype=torch.float32)
