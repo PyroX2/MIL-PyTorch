@@ -261,7 +261,7 @@ def main():
     train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
-    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=None, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     if wandb_logger is not None:
         wandb_logger.config["classes"] = train_dataset.dirs_with_classes
