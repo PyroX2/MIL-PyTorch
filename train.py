@@ -1,5 +1,8 @@
 import os
 import torch
+from torch import nn
+from torch.utils.data import DataLoader
+from torch.utils.data.sampler import Sampler
 from torchvision.transforms import v2
 from image_patcher import ImagePatcher
 from dataset import MILDataset
@@ -112,11 +115,24 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     avg_val_loss = torch.tensor(gathered_losses.mean() / len(val_dl))
 
     val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, _ = metrics_calculator.calculate(gathered_outputs, gathered_targets)
-    return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall
+    return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, gathered_outputs, gathered_targets
 
 
 # Train the model
-def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, num_epochs, output_dim, is_ddp, rank, world_size, log_name, logger=None):
+def train(model: torch.nn.Module, 
+          train_dl: DataLoader, 
+          val_dl: DataLoader, 
+          train_sampler: Sampler, 
+          criterion: nn.Module, 
+          optimizer: torch.optim.Optimizer, 
+          device: str, 
+          num_epochs: int, 
+          output_dim: int, 
+          is_ddp: bool, 
+          rank: int, 
+          world_size: int, 
+          log_name: str, 
+          logger: wandb.Run = None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
     
@@ -183,7 +199,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             device=device)
         
         if res is not None:
-            avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall = res
+            avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, val_outputs, val_targets = res
 
             # Print epoch summary
             print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
@@ -205,9 +221,21 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
                 log_metric(logger, val_precision, "val_precision")
                 log_metric(logger, val_recall, "val_recall")
 
+
+
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 torch.save(model.state_dict(), f"{log_name}_best_attention_mil_model.pth")
+
+                if logger is not None:
+                    # Log train and validation confusion matrices
+                    logger.log({"best_val_conf_mat" : wandb.plot.confusion_matrix(
+                            y_true=val_targets.tolist(), probs=val_outputs.tolist(),
+                            class_names=train_dl.dataset.classes, title="Validation confusion matrix")})
+                    
+                    logger.log({"best_train_conf_mat" : wandb.plot.confusion_matrix(
+                            y_true=targets_list, probs=outputs_list,
+                            class_names=train_dl.dataset.classes, title="Training confusion matrix")})
 
     print("Model training complete and saved.")
     torch.save(model.state_dict(), f"{log_name}_attention_mil_model.pth")
@@ -286,7 +314,6 @@ def main():
     # Log additional params to wandb logger
     if wandb_logger is not None:
         wandb_logger.config["classes"] = train_dataset.dirs_with_classes
-        wandb_logger.config["output_dim"] = output_dim
         wandb_logger.config["optimizer"] = type(optimizer)
         wandb_logger.config["is_ddp"] = is_ddp
         wandb_logger.config["world_size"] = world_size
