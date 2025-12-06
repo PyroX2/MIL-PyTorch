@@ -131,11 +131,6 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
             outputs_list.extend(outputs.detach().cpu().tolist())
             targets_list.extend(labels.detach().cpu().tolist())
 
-            if i > 100:
-                break
-            
-            i += 1
-
     gathered_outputs = gather_from_ranks(outputs_list, is_ddp, world_size)
     gathered_targets = gather_from_ranks(targets_list, is_ddp, world_size)
     # gathered_losses = gather_from_ranks(losses_list, is_ddp, world_size)
@@ -147,6 +142,10 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     gathered_losses = torch.tensor(gathered_losses).flatten()
     gathered_outputs = torch.tensor(gathered_outputs).flatten(0, 1)
     gathered_targets = torch.tensor(gathered_targets).flatten(0, 1)
+
+    # Save outputs and targets tensors as a backup
+    torch.save(gathered_outputs, "outputs.pth")
+    torch.save(gathered_targets, "targets.pth")
 
     avg_val_loss = gathered_losses.mean() / len(val_dl)
 
