@@ -1,11 +1,9 @@
 import os
 import torch
-from torch.utils.data import Subset
 from torchvision.transforms import v2
 from image_patcher import ImagePatcher
 from dataset import MILDataset
 from data_utils import collate_fn
-from model import AttentionMILModel
 from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
@@ -16,30 +14,26 @@ from tqdm import tqdm
 import json
 import torch.nn.functional as F
 from time import gmtime, strftime
+import yaml
+from typing import Dict
 
 
 def parse_args():
     parser = ArgumentParser(description="Train Attention-based MIL Model")
     parser.add_argument("--data-dir", type=str, required=True, help="Path to the dataset directory")
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
-    parser.add_argument("--num-epochs", type=int, default=10, help="Number of training epochs")
-    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for optimizer")
-    parser.add_argument("--patch-size", type=int, default=224, help="Size of image patches")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use for training")
-    parser.add_argument("--overlap", type=float, default=0.5, help="Overlap size between patches")
-    parser.add_argument("--attention-dim", type=int, default=128, help="Dimension of attention layer")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of workers for data loading")
     parser.add_argument("--log-wandb", action="store_true", help="Whether to log training to Weights & Biases")
     parser.add_argument("--class-selection", action="store_true", help="If used classes are defined based on classes.json config file")
-    parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
-    parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
     parser.add_argument("--log-name", type=str, required=False, default=strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
-    parser.add_argument("--avg-method", type=str, required=False, default="micro", help="Averaging method used by metrics calculator. One of [micro, macro, None]")
     return parser.parse_args()
 
-args = parse_args()
+# Parses train config defined as yaml file
+def parse_train_config() -> Dict:
+    with open("config/train_config.yaml", "r") as f:
+        train_config = yaml.safe_load(f)
+    return train_config
 
-def get_logger(args):
+
+def get_logger():
     # Start a new wandb run to track this script.
     wandb_logger = wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
@@ -47,19 +41,10 @@ def get_logger(args):
         # Set the wandb project where this run will be logged.
         project="MIL-Breast-Cancer",
         # Track hyperparameters and run metadata.
-        config={
-            "learning_rate": args.learning_rate,
-            "batch_size": args.batch_size,
-            "dataset": args.data_dir,
-            "epochs": args.num_epochs,
-            "patch_size": args.patch_size,
-            "overlap": args.overlap,
-            "attention_dim": args.attention_dim,
-            "device": args.device,
-            "avg_method": args.avg_method
-        },
+        config=train_config,
     )
     return wandb_logger
+    
 
 
 def log_metric(logger: wandb.Run, metric: torch.Tensor, metric_name: str):
@@ -79,7 +64,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=train_config["avg_method"])
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -140,7 +125,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=train_config["avg_method"])
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -232,6 +217,9 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
         logger.log_model(path=f"{log_name}_attention_mil_model.pth", name="final_attention_mil_model")
 
 
+args = parse_args()
+train_config = parse_train_config()
+
 def main():
     # Setup distributed data processing
     is_ddp, local_rank, rank, world_size = init_distributed()
@@ -241,15 +229,15 @@ def main():
         print(f"Available GPUs: {torch.cuda.device_count()}")
 
     if args.log_wandb and rank == 0 and is_ddp:     # If distributed, only log from rank 0
-        wandb_logger = get_logger(args)
+        wandb_logger = get_logger()
         wandb_logger.log_model(path="model.py", name="attention_mil_model")
     elif args.log_wandb and not is_ddp:    # Non-distributed logging
-        wandb_logger = get_logger(args)
+        wandb_logger = get_logger()
         wandb_logger.log_model(path="model.py", name="attention_mil_model")
     else:
         wandb_logger = None
 
-    device = args.device
+    device = train_config["device"]
 
     # Define image transformations
     transform = v2.Compose([
@@ -258,7 +246,7 @@ def main():
         ])
 
     # Create patcher used for splitting images into patches
-    patcher = ImagePatcher(patch_size=args.patch_size, overlap=args.overlap)
+    patcher = ImagePatcher(patch_size=train_config["patch_size"], overlap=train_config["patch_size"])
 
     # Select subset of classes
     if args.class_selection:
@@ -268,25 +256,25 @@ def main():
         selected_classes = None
 
     # Create dataset and dataloader
-    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
-    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
+    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=train_config["batch_size"], shuffle=True, sample_type=train_config["sample_type"], num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
-    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=None, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=train_config["batch_size"], shuffle=False, sample_type=None, num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
 
     n_classes = len(train_dataset.classes)
 
-    if args.output_dim == -1:
+    if train_config["output_dim"] == -1:
         if n_classes == 2:
             output_dim = 1
         else:
             output_dim = n_classes
     else:
-        output_dim = args.output_dim
+        output_dim = train_config["output_dim"]
 
     # Initialize model, loss function, and optimizer
-    model = build_model(output_dim=output_dim, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    model = build_model(output_dim=output_dim, att_dim=train_config["attention_dim"], is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
     # Use correct criterion for binary/multiclass classification problem
     if output_dim == 1:
@@ -294,7 +282,7 @@ def main():
     else:
         criterion = torch.nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
 
     # Log additional params to wandb logger
     if wandb_logger is not None:
@@ -313,7 +301,7 @@ def main():
         criterion, 
         optimizer, 
         device, 
-        num_epochs=args.num_epochs,
+        num_epochs=train_config["num_epochs"],
         output_dim=output_dim,
         is_ddp=is_ddp,
         rank=rank,
