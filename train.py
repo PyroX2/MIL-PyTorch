@@ -60,6 +60,17 @@ def get_logger(args):
     return wandb_logger
 
 
+def log_metric(logger: wandb.Run, metric: torch.Tensor, metric_name: str):
+    assert isinstance(metric, torch.Tensor), f"Expected metric to be torch.Tensor, found {metric_name} of type {type(metric)}"
+
+    if metric.ndim != 0:
+        # Log separate metric for each class
+        for class_id in range(metric.size()[0]):
+            logger.log({f"{metric_name}_{class_id}": metric[class_id]})
+    else:
+        logger.log({metric_name: metric})
+
+
 # Given a model and validation dataloader, evaluate the model performance on validation set
 def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
@@ -112,7 +123,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     gathered_outputs = torch.tensor(gathered_outputs).flatten(0, 1)
     gathered_targets = torch.tensor(gathered_targets).flatten(0, 1)
 
-    avg_val_loss = gathered_losses.mean() / len(val_dl)
+    avg_val_loss = torch.tensor(gathered_losses.mean() / len(val_dl))
 
     val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, _ = metrics_calculator.calculate(gathered_outputs, gathered_targets)
     return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall
@@ -171,7 +182,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             targets_list.extend(labels.detach().cpu().tolist())
 
         # Calculate train metrics
-        avg_train_loss = epoch_loss / len(train_dl)
+        avg_train_loss = torch.tensor(epoch_loss / len(train_dl))
         train_accuracy, train_f1_score, train_auprc, train_auroc, train_precision, train_recall, _ = metrics_calculator.calculate(outputs_list, targets_list)
 
         # Calculate validation metrics
@@ -193,22 +204,20 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
         
             # Logging to wandb
             if logger is not None:
-                logger.log({
-                    "train_loss": avg_train_loss,
-                    "train_accuracy": train_accuracy,
-                    "train_f1_score": train_f1_score,
-                    "train_auprc": train_auprc,
-                    "train_auroc": train_auroc,
-                    "train_precision": train_precision,
-                    "train_recall": train_recall,
-                    "val_loss": avg_val_loss,
-                    "val_accuracy": val_accuracy,
-                    "val_f1_score": val_f1_score,
-                    "val_auprc": val_auprc,
-                    "val_auroc": val_auroc,
-                    "val_precision": val_precision,
-                    "val_recall": val_recall,
-                })
+                log_metric(logger, avg_train_loss, "train_loss")
+                log_metric(logger, train_accuracy, "train_accuracy")
+                log_metric(logger, train_f1_score, "train_f1_score")
+                log_metric(logger, train_auprc, "train_auprc")
+                log_metric(logger, train_auroc, "train_auroc")
+                log_metric(logger, train_precision, "train_precision")
+                log_metric(logger, train_recall, "train_recall")
+                log_metric(logger, avg_val_loss, "val_loss")
+                log_metric(logger, val_accuracy, "val_accuracy")
+                log_metric(logger, val_f1_score, "val_f1_score")
+                log_metric(logger, val_auprc, "val_auprc")
+                log_metric(logger, val_auroc, "val_auroc")
+                log_metric(logger, val_precision, "val_precision")
+                log_metric(logger, val_recall, "val_recall")
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
