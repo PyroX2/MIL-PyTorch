@@ -1,11 +1,11 @@
 # General
-batch_size: 1
+batch_size: 4
 num_epochs: 100
 lr: 1.0e-4
-num_workers: 1
+num_workers: 16
 device: "cuda"
 
-output_dim: 1   # Number of output neurons
+output_dim: -1   # Number of output neurons (-1 to inherit from number of classes)
 
 # MIL specific
 patch_size: 224
