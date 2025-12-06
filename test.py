@@ -67,11 +67,14 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
             # Model forward pass
             outputs = model(features, masks, bags_length)
 
-            # If binary classification use sigmoid and convert labels to float
+            # If binary classification use sigmoid, multiclass use softmax
             if output_dim == 1:
                 outputs = F.sigmoid(outputs)
                 labels = labels.to(torch.float32)
-
+            else:
+                # For multiclass, keep logits - softmax applied internally by metrics
+                outputs = F.softmax(outputs, dim=-1)
+        
             loss = criterion(outputs, labels)
 
             losses_list.append(loss.item())
@@ -152,7 +155,10 @@ def main():
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device, state_dict=state_dict)
 
-    criterion = torch.nn.CrossEntropyLoss()
+    if output_dim == 1:
+        criterion = torch.nn.BCELoss()
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
 
     # Calculate validation metrics
     res = validate(
