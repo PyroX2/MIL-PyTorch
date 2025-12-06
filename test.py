@@ -103,8 +103,6 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     else:
         iterator = val_dl
 
-    i = 0
-
     model.eval()
     with torch.no_grad():
         for features, labels, masks, bags_length in iterator:
