@@ -3,7 +3,6 @@ import torch
 from torchvision.transforms import v2
 from image_patcher import ImagePatcher
 from dataset import MILDataset
-from data_utils import collate_fn
 from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
