@@ -256,7 +256,7 @@ def main():
         selected_classes = None
 
     # Create dataset and dataloader
-    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
+    train_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "train"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
     train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=train_config["batch_size"], shuffle=True, sample_type=train_config["sample_type"], num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
