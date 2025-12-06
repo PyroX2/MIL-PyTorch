@@ -246,7 +246,7 @@ def main():
         ])
 
     # Create patcher used for splitting images into patches
-    patcher = ImagePatcher(patch_size=train_config["patch_size"], overlap=train_config["patch_size"])
+    patcher = ImagePatcher(patch_size=train_config["patch_size"], overlap=train_config["overlap"])
 
     # Select subset of classes
     if args.class_selection:
