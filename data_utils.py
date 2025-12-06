@@ -56,11 +56,11 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
             weighted_sampler = WeightedRandomSampler(weights=samples_weights, num_samples=len(samples_weights), replacement=True)
             
             # Create dataloader
-            dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=weighted_sampler)
+            dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=weighted_sampler, pin_memory=True)
 
             return dataloader, weighted_sampler
         else:
-            return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False), None
+            return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, shuffle=False, pin_memory=True), None
     else:
         if rank == 0:
             all_idx = balance_indices(targets, sample_type=sample_type)
@@ -81,7 +81,7 @@ def create_dataloader(dataset, batch_size, num_workers, is_ddp, rank=0, world_si
 
         sampler = DistributedSampler(subset, num_replicas=world_size, rank=rank, shuffle=shuffle)
 
-        dataloader = DataLoader(subset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=sampler)
+        dataloader = DataLoader(subset, batch_size=batch_size, collate_fn=collate_fn, num_workers=num_workers, sampler=sampler, pin_memory=True)
 
         return dataloader, sampler
 

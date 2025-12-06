@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
     parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
     parser.add_argument("--log-name", type=str, required=False, default=strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
+    parser.add_argument("--avg-method", type=str, required=False, default="micro", help="Averaging method used by metrics calculator. One of [micro, macro, None]")
     return parser.parse_args()
 
 args = parse_args()
@@ -55,9 +56,21 @@ def get_logger(args):
             "overlap": args.overlap,
             "attention_dim": args.attention_dim,
             "device": args.device,
+            "avg_method": args.avg_method
         },
     )
     return wandb_logger
+
+
+def log_metric(logger: wandb.Run, metric: torch.Tensor, metric_name: str):
+    assert isinstance(metric, torch.Tensor), f"Expected metric to be torch.Tensor, found {metric_name} of type {type(metric)}"
+
+    if metric.ndim != 0:
+        # Log separate metric for each class
+        for class_id in range(metric.size()[0]):
+            logger.log({f"{metric_name}_{class_id}": metric[class_id]})
+    else:
+        logger.log({metric_name: metric})
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
@@ -66,7 +79,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -112,7 +125,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     gathered_outputs = torch.tensor(gathered_outputs).flatten(0, 1)
     gathered_targets = torch.tensor(gathered_targets).flatten(0, 1)
 
-    avg_val_loss = gathered_losses.mean() / len(val_dl)
+    avg_val_loss = torch.tensor(gathered_losses.mean() / len(val_dl))
 
     val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, _ = metrics_calculator.calculate(gathered_outputs, gathered_targets)
     return avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall
@@ -127,7 +140,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -171,7 +184,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
             targets_list.extend(labels.detach().cpu().tolist())
 
         # Calculate train metrics
-        avg_train_loss = epoch_loss / len(train_dl)
+        avg_train_loss = torch.tensor(epoch_loss / len(train_dl))
         train_accuracy, train_f1_score, train_auprc, train_auroc, train_precision, train_recall, _ = metrics_calculator.calculate(outputs_list, targets_list)
 
         # Calculate validation metrics
@@ -193,22 +206,20 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
         
             # Logging to wandb
             if logger is not None:
-                logger.log({
-                    "train_loss": avg_train_loss,
-                    "train_accuracy": train_accuracy,
-                    "train_f1_score": train_f1_score,
-                    "train_auprc": train_auprc,
-                    "train_auroc": train_auroc,
-                    "train_precision": train_precision,
-                    "train_recall": train_recall,
-                    "val_loss": avg_val_loss,
-                    "val_accuracy": val_accuracy,
-                    "val_f1_score": val_f1_score,
-                    "val_auprc": val_auprc,
-                    "val_auroc": val_auroc,
-                    "val_precision": val_precision,
-                    "val_recall": val_recall,
-                })
+                log_metric(logger, avg_train_loss, "train_loss")
+                log_metric(logger, train_accuracy, "train_accuracy")
+                log_metric(logger, train_f1_score, "train_f1_score")
+                log_metric(logger, train_auprc, "train_auprc")
+                log_metric(logger, train_auroc, "train_auroc")
+                log_metric(logger, train_precision, "train_precision")
+                log_metric(logger, train_recall, "train_recall")
+                log_metric(logger, avg_val_loss, "val_loss")
+                log_metric(logger, val_accuracy, "val_accuracy")
+                log_metric(logger, val_f1_score, "val_f1_score")
+                log_metric(logger, val_auprc, "val_auprc")
+                log_metric(logger, val_auroc, "val_auroc")
+                log_metric(logger, val_precision, "val_precision")
+                log_metric(logger, val_recall, "val_recall")
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
@@ -261,10 +272,8 @@ def main():
     train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=args.batch_size, shuffle=True, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
-    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=args.sample_type, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=None, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
-    if wandb_logger is not None:
-        wandb_logger.config["classes"] = train_dataset.dirs_with_classes
 
     n_classes = len(train_dataset.classes)
 
@@ -276,8 +285,6 @@ def main():
     else:
         output_dim = args.output_dim
 
-    print(f"{output_dim=}")
-
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
@@ -288,6 +295,14 @@ def main():
         criterion = torch.nn.CrossEntropyLoss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    # Log additional params to wandb logger
+    if wandb_logger is not None:
+        wandb_logger.config["classes"] = train_dataset.dirs_with_classes
+        wandb_logger.config["output_dim"] = output_dim
+        wandb_logger.config["optimizer"] = type(optimizer)
+        wandb_logger.config["is_ddp"] = is_ddp
+        wandb_logger.config["world_size"] = world_size
 
     # Train the model
     train(
