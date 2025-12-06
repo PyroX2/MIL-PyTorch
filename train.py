@@ -135,6 +135,7 @@ def train(model: torch.nn.Module,
           logger: wandb.Run = None):
     # Initialize variables to track best model
     best_val_loss = float('inf')
+    best_weights = model.state_dict()
     
     # Use correct metrics calculator for classification problem
     if output_dim == 1:
@@ -226,6 +227,7 @@ def train(model: torch.nn.Module,
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 torch.save(model.state_dict(), f"{log_name}_best_attention_mil_model.pth")
+                best_weights = model.state_dict()
 
                 if logger is not None:
                     # Log train and validation confusion matrices
@@ -238,6 +240,7 @@ def train(model: torch.nn.Module,
                             class_names=train_dl.dataset.classes, title="Training confusion matrix")})
 
     print("Model training complete and saved.")
+    model.load_state_dict(best_weights)
     torch.save(model.state_dict(), f"{log_name}_attention_mil_model.pth")
     
     if logger is not None:
