@@ -32,14 +32,15 @@ def parse_args():
     parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
     parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
     parser.add_argument("--ckpt-path", type=str, required=False, default=None, help="Path to model weights used for evaluation")
+    parser.add_argument("--thresh", type=float, required=False, default=0.5, help="Cutoff threshold value")
     return parser.parse_args()
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
+def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device, threshold=0.5):
     # Initialize validation dataloader with correct number of classes
     if output_dim == 1:
-        metrics_calculator = BinaryMetricsCalculator()
+        metrics_calculator = BinaryMetricsCalculator(threshold=threshold)
     else:
         metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
 
@@ -162,7 +163,8 @@ def main():
         is_ddp=is_ddp,
         rank=rank,
         world_size=world_size,
-        device=device)
+        device=device,
+        threshold=args.thresh)
     
     if res is not None:
         avg_val_loss, val_accuracy, val_f1_score, val_auprc, val_auroc, val_precision, val_recall, confusion_matrix = res
