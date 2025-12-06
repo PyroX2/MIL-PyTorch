@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--sample-type", type=str, default=None, required=False, help="Method used for balancing the dataset. Can be 'oversample', 'undersample' or None")
     parser.add_argument("--output-dim", type=int, required=False, default=-1, help="Number of output neurons. Should be equal to n_classes for classification problem or 1 for binary classification.")
     parser.add_argument("--log-name", type=str, required=False, default=strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
+    parser.add_argument("--avg-method", type=str, required=False, default="micro", help="Averaging method used by metrics calculator. One of [micro, macro, None]")
     return parser.parse_args()
 
 args = parse_args()
@@ -55,6 +56,7 @@ def get_logger(args):
             "overlap": args.overlap,
             "attention_dim": args.attention_dim,
             "device": args.device,
+            "avg_method": args.avg_method
         },
     )
     return wandb_logger
@@ -77,7 +79,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
 
     val_loss = 0.0 # Track validation loss
     outputs_list = []
@@ -138,7 +140,7 @@ def train(model, train_dl, val_dl, train_sampler, criterion, optimizer, device, 
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
     else:
-        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim)
+        metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=args.avg_method)
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -272,8 +274,6 @@ def main():
     val_dataset = MILDataset(dataset_path=os.path.join(args.data_dir, "val"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=transform)
     val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=args.batch_size, shuffle=False, sample_type=None, num_workers=args.num_workers, is_ddp=is_ddp, rank=rank, world_size=world_size)
 
-    if wandb_logger is not None:
-        wandb_logger.config["classes"] = train_dataset.dirs_with_classes
 
     n_classes = len(train_dataset.classes)
 
@@ -285,8 +285,6 @@ def main():
     else:
         output_dim = args.output_dim
 
-    print(f"{output_dim=}")
-
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=args.attention_dim, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
@@ -297,6 +295,14 @@ def main():
         criterion = torch.nn.CrossEntropyLoss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    # Log additional params to wandb logger
+    if wandb_logger is not None:
+        wandb_logger.config["classes"] = train_dataset.dirs_with_classes
+        wandb_logger.config["output_dim"] = output_dim
+        wandb_logger.config["optimizer"] = type(optimizer)
+        wandb_logger.config["is_ddp"] = is_ddp
+        wandb_logger.config["world_size"] = world_size
 
     # Train the model
     train(
