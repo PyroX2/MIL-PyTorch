@@ -3,14 +3,13 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
-from torchvision.transforms import v2
 from image_patcher import ImagePatcher
 from dataset import MILDataset
 from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
-from model_utils import build_model
+from model_utils import build_model, build_fe
 import wandb
 from tqdm import tqdm
 import json
@@ -20,7 +19,6 @@ import yaml
 from typing import Dict
 import albumentations as A
 import cv2
-from model import FeatureExtractor
 
 
 
@@ -372,7 +370,7 @@ def main():
 
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=train_config["attention_dim"], is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
-    feature_extractor = FeatureExtractor().to(device)
+    feature_extractor = build_fe(is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
     # Use correct criterion for binary/multiclass classification problem
     if output_dim == 1:
