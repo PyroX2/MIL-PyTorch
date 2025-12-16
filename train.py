@@ -20,6 +20,7 @@ import yaml
 from typing import Dict
 import albumentations as A
 import cv2
+from model import FeatureExtractor
 
 
 
@@ -64,7 +65,7 @@ def log_metric(logger, metric: torch.Tensor, metric_name: str):
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
+def validate(model, feature_extractor, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
@@ -90,7 +91,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
             masks = masks.to(device)
 
             # Model forward pass
-            outputs = model(features, masks, bags_length)
+            outputs = model(features, masks, bags_length, feature_extractor)
 
             # If binary classification use sigmoid and transform labels to float
             if output_dim == 1:
@@ -122,7 +123,8 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
 
 
 # Train the model
-def train(model: torch.nn.Module, 
+def train(model: torch.nn.Module,
+          feature_extractor: nn.Module,
           train_dl: DataLoader, 
           val_dl: DataLoader, 
           train_sampler: Sampler, 
@@ -171,7 +173,7 @@ def train(model: torch.nn.Module,
             labels = labels.to(device)
 
             # Model and criterion forward pass
-            outputs = model(features, masks, bags_length)
+            outputs = model(features, masks, bags_length, feature_extractor)
 
             if output_dim == 1:
                 outputs = F.sigmoid(outputs)
@@ -193,7 +195,8 @@ def train(model: torch.nn.Module,
 
         # Calculate validation metrics
         res = validate(
-            model, 
+            model,
+            feature_extractor,
             val_dl, 
             criterion,
             output_dim=output_dim,
@@ -357,7 +360,6 @@ def main():
     val_dataset = MILDataset(dataset_csv=os.path.join(args.data_dir, "val_split.csv"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=val_transform)
     val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=train_config["batch_size"], shuffle=False, sample_type=None, num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
-
     n_classes = len(train_dataset.classes)
 
     if train_config["output_dim"] == -1:
@@ -370,6 +372,7 @@ def main():
 
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=train_config["attention_dim"], is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    feature_extractor = FeatureExtractor().to(device)
 
     # Use correct criterion for binary/multiclass classification problem
     if output_dim == 1:
@@ -388,7 +391,8 @@ def main():
 
     # Train the model
     train(
-        model, 
+        model,
+        feature_extractor,
         train_dataloader, 
         val_dataloader, 
         train_sampler, 
