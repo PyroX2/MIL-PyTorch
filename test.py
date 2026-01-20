@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 import pandas as pd
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
-from model_utils import build_model
+from model_utils import build_model, build_fe
 from torch.utils.data import random_split
 import torch.nn.functional as F
 from sklearn.metrics import roc_curve
@@ -44,7 +44,7 @@ def parse_args():
 
 # Parses train config defined as yaml file
 def parse_test_config() -> Dict:
-    with open("config/test_config.yaml", "r") as f:
+    with open("config/test_config_convnext.yaml", "r") as f:
         test_config = yaml.safe_load(f)
     return test_config
 
@@ -90,13 +90,13 @@ def plot_roc_curve_with_best_threshold(roc_data, auroc_score=None):
                  xytext=(best_fpr + 0.1, best_tpr - 0.1),
                  arrowprops=dict(facecolor='black', shrink=0.05))
     
-    plt.savefig("ROC_curve.png")
+    plt.savefig("ROC_curve_convnext.png")
     
     return best_thresh
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device, threshold=0.5):
+def validate(model, feature_extractor, val_dl, criterion, output_dim, is_ddp, rank, world_size, device, threshold=0.5):
     # Initialize validation dataloader with correct number of classes
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator(threshold=threshold)
@@ -122,7 +122,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
             masks = masks.to(device)
 
             # Model forward pass
-            outputs = model(features, masks, bags_length)
+            outputs = model(features, masks, bags_length, feature_extractor)
 
             # If binary classification use sigmoid, multiclass use softmax
             if output_dim == 1:
@@ -214,13 +214,14 @@ def main():
     if args.ckpt_path is not None:
         print(f"Using checkpoint from: {args.ckpt_path}")
         state_dict = torch.load(args.ckpt_path, weights_only=True, map_location=device)
-        state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+        # state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
     else:
         state_dict = None
 
     # Initialize model, loss function, and optimizer
-    model = build_model(output_dim=output_dim, att_dim=test_config["attention_dim"], is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device, state_dict=state_dict)
+    model = build_model(output_dim=output_dim, att_dim=test_config["attention_dim"], dropout_rate=0, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device, state_dict=None)
     model.load_state_dict(state_dict)
+    feature_extractor = build_fe(is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
 
     if output_dim == 1:
         criterion = torch.nn.BCELoss()
@@ -230,6 +231,7 @@ def main():
     # Calculate validation metrics
     res = validate(
         model, 
+        feature_extractor,
         val_dataloader, 
         criterion,
         output_dim=output_dim,
@@ -265,8 +267,8 @@ def main():
         confusion_matrix_df = pd.DataFrame(confusion_matrix)
         
         # Save results to csv files
-        results_df.to_csv("test_results.csv")
-        confusion_matrix_df.to_csv("confusion_matrix.csv")
+        results_df.to_csv("test_results_convnext.csv")
+        confusion_matrix_df.to_csv("confusion_matrix_convnext.csv")
 
 
     # Distributed data processing cleanup

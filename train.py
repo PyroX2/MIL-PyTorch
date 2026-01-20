@@ -10,7 +10,7 @@ from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
-from model_utils import build_model
+from model_utils import build_model, build_fe
 import wandb
 from tqdm import tqdm
 import json
@@ -33,7 +33,7 @@ def parse_args():
 
 # Parses train config defined as yaml file
 def parse_train_config() -> Dict:
-    with open("config/train_config.yaml", "r") as f:
+    with open("config/train_config_convnext.yaml", "r") as f:
         train_config = yaml.safe_load(f)
     return train_config
 
@@ -64,7 +64,7 @@ def log_metric(logger, metric: torch.Tensor, metric_name: str):
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
+def validate(model, feature_extractor, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
@@ -89,15 +89,17 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
             labels = labels.to(device)
             masks = masks.to(device)
 
-            # Model forward pass
-            outputs = model(features, masks, bags_length)
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # Model forward pass
+                outputs = model(features, masks, bags_length, feature_extractor)
 
-            # If binary classification use sigmoid and transform labels to float
-            if output_dim == 1:
-                outputs = F.sigmoid(outputs)
+                # If binary classification use sigmoid and transform labels to float
                 labels = labels.to(torch.float32)
-    
-            loss = criterion(outputs, labels)
+        
+                loss = criterion(outputs, labels)
+
+                if output_dim == 1:
+                    outputs = F.sigmoid(outputs) # For metrics calculation
 
             losses_list.append(loss.item())
             val_loss += loss.item()
@@ -122,7 +124,8 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
 
 
 # Train the model
-def train(model: torch.nn.Module, 
+def train(model: torch.nn.Module,
+          feature_extractor: torch.nn.Module, 
           train_dl: DataLoader, 
           val_dl: DataLoader, 
           train_sampler: Sampler, 
@@ -145,6 +148,8 @@ def train(model: torch.nn.Module,
         metrics_calculator = BinaryMetricsCalculator()
     else:
         metrics_calculator = MulticlassMetricsCalculator(num_classes=output_dim, avg_method=train_config["avg_method"])
+
+    scaler = torch.amp.GradScaler()
     
     for epoch in range(num_epochs):
         if rank == 0:
@@ -170,18 +175,21 @@ def train(model: torch.nn.Module,
             masks = masks.to(device)
             labels = labels.to(device)
 
-            # Model and criterion forward pass
-            outputs = model(features, masks, bags_length)
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # Model and criterion forward pass
+                outputs = model(features, masks, bags_length, feature_extractor)
 
-            if output_dim == 1:
-                outputs = F.sigmoid(outputs)
                 labels = labels.to(torch.float32)
 
-            loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels)
+
+                if output_dim == 1:
+                    outputs = F.sigmoid(outputs)
 
             # Model optimization step
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             epoch_loss += loss.item()
             outputs_list.extend(outputs.detach().cpu().tolist())
@@ -194,6 +202,7 @@ def train(model: torch.nn.Module,
         # Calculate validation metrics
         res = validate(
             model, 
+            feature_extractor,
             val_dl, 
             criterion,
             output_dim=output_dim,
@@ -371,15 +380,16 @@ def main():
         output_dim = train_config["output_dim"]
 
     # Initialize model, loss function, and optimizer
-    model = build_model(output_dim=output_dim, att_dim=train_config["attention_dim"], is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    model = build_model(output_dim=output_dim, att_dim=train_config["attention_dim"], dropout_rate=train_config["dropout_rate"] ,is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    feature_extractor = build_fe(is_ddp=is_ddp, rank=rank, local_rank=local_rank, state_dict=None, device=device)
 
     # Use correct criterion for binary/multiclass classification problem
     if output_dim == 1:
-        criterion = torch.nn.BCELoss()
+        criterion = torch.nn.BCEWithLogitsLoss()
     else:
         criterion = torch.nn.CrossEntropyLoss()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=train_config["lr"], weight_decay=train_config["weight_decay"])
 
     # Log additional params to wandb logger
     if wandb_logger is not None:
@@ -391,6 +401,7 @@ def main():
     # Train the model
     best_val_auprc = train(
         model, 
+        feature_extractor,
         train_dataloader, 
         val_dataloader, 
         train_sampler, 
