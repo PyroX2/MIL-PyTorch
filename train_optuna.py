@@ -10,7 +10,7 @@ from metrics import BinaryMetricsCalculator, MulticlassMetricsCalculator
 from argparse import ArgumentParser
 from ddp_utils import init_distributed, cleanup_distributed, gather_from_ranks
 from data_utils import create_dataloader
-from model_utils import build_model
+from model_utils import build_model, build_fe
 import wandb
 from tqdm import tqdm
 import json
@@ -67,7 +67,7 @@ def log_metric(logger, metric: torch.Tensor, metric_name: str):
 
 
 # Given a model and validation dataloader, evaluate the model performance on validation set
-def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
+def validate(model, feature_extractor, val_dl, criterion, output_dim, is_ddp, rank, world_size, device):
     # Initialize validation dataloader with correct number of classes
     if output_dim == 1:
         metrics_calculator = BinaryMetricsCalculator()
@@ -94,7 +94,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
 
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 # Model forward pass
-                outputs = model(features, masks, bags_length)
+                outputs = model(features, masks, bags_length, feature_extractor)
 
                 # If binary classification use sigmoid and transform labels to float
                 labels = labels.to(torch.float32)
@@ -128,6 +128,7 @@ def validate(model, val_dl, criterion, output_dim, is_ddp, rank, world_size, dev
 
 # Train the model
 def train(model: torch.nn.Module, 
+          feature_extractor: torch.nn.Module,
           train_dl: DataLoader, 
           val_dl: DataLoader, 
           train_sampler: Sampler, 
@@ -179,7 +180,7 @@ def train(model: torch.nn.Module,
 
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 # Model and criterion forward pass
-                outputs = model(features, masks, bags_length)
+                outputs = model(features, masks, bags_length, feature_extractor)
 
                 labels = labels.to(torch.float32)
 
@@ -204,6 +205,7 @@ def train(model: torch.nn.Module,
         # Calculate validation metrics
         res = validate(
             model, 
+            feature_extractor,
             val_dl, 
             criterion,
             output_dim=output_dim,
@@ -284,11 +286,14 @@ def objective(trial, is_ddp, rank, world_size, local_rank, device):
         params['att_dim'] = trial.suggest_categorical('att_dim', [16, 32, 64, 128, 256, 512, 1024])
         params['dropout_rate'] = trial.suggest_categorical('dropout_rate', [0, 0.2, 0.4, 0.5, 0.6])
         params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-4, log=True)
+        params['batch_size'] = trial.suggest_categorical('batch_size', [1, 2, 4])
 
     if is_ddp:
         object_list = [params]
         dist.broadcast_object_list(object_list, src=0)
         params = object_list[0]
+
+    print(f"\nParams: {params}\n")
 
     patch_size = params['patch_size']
     overlap = params['overlap']
@@ -296,6 +301,8 @@ def objective(trial, is_ddp, rank, world_size, local_rank, device):
     att_dim = params['att_dim']
     dropout_rate = params['dropout_rate']
     weight_decay = params['weight_decay']
+    batch_size = params['batch_size']
+    # batch_size = 1
 
     if args.log_wandb and rank == 0 and is_ddp:     # If distributed, only log from rank 0
         wandb_logger = get_logger()
@@ -376,11 +383,11 @@ def objective(trial, is_ddp, rank, world_size, local_rank, device):
         selected_classes = None
 
     # Create dataset and dataloader
-    train_dataset = MILDataset(dataset_csv=os.path.join(args.data_dir, "train_split_clean.csv"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=train_transform)
-    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=train_config["batch_size"], shuffle=True, sample_type=train_config["sample_type"], num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
+    train_dataset = MILDataset(dataset_csv=os.path.join(args.data_dir, "train_split.csv"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=train_transform)
+    train_dataloader, train_sampler = create_dataloader(train_dataset, batch_size=batch_size, shuffle=True, sample_type=train_config["sample_type"], num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
-    val_dataset = MILDataset(dataset_csv=os.path.join(args.data_dir, "val_split_clean.csv"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=val_transform)
-    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=train_config["batch_size"], shuffle=False, sample_type=None, num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
+    val_dataset = MILDataset(dataset_csv=os.path.join(args.data_dir, "val_split.csv"), image_patcher=patcher, dirs_with_classes=selected_classes, transform=val_transform)
+    val_dataloader, val_sampler = create_dataloader(val_dataset, batch_size=batch_size, shuffle=False, sample_type=None, num_workers=train_config["num_workers"], is_ddp=is_ddp, rank=rank, world_size=world_size)
 
 
     n_classes = len(train_dataset.classes)
@@ -395,6 +402,10 @@ def objective(trial, is_ddp, rank, world_size, local_rank, device):
 
     # Initialize model, loss function, and optimizer
     model = build_model(output_dim=output_dim, att_dim=att_dim, dropout_rate=dropout_rate, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+
+    model = build_model(output_dim=output_dim, att_dim=att_dim, dropout_rate=dropout_rate, is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+    feature_extractor = build_fe(is_ddp=is_ddp, rank=rank, local_rank=local_rank, device=device)
+
 
     # Use correct criterion for binary/multiclass classification problem
     if output_dim == 1:
@@ -414,6 +425,7 @@ def objective(trial, is_ddp, rank, world_size, local_rank, device):
     # Train the model
     best_val_auprc = train(
         model, 
+        feature_extractor,
         train_dataloader, 
         val_dataloader, 
         train_sampler, 
